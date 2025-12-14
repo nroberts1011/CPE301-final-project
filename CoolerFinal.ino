@@ -1,6 +1,6 @@
 // Names: Victor Rosales & Natalie Roberts
-// Brief Description: Cooler Code
-// Date: 12/10/25
+// Brief Description: Our Swamp Cooler
+// Date: 12/12/25
 
 // lcd for final proj
 
@@ -62,7 +62,7 @@ volatile unsigned char* port_K = (unsigned char*)0x4B;
 volatile unsigned char* ddr_K  = (unsigned char*)0x4A;
 volatile unsigned char* pin_K  = (unsigned char*)0x49;
 
-//my delay
+//my millis
 volatile unsigned char *myTCCR1A = (unsigned char *) 0x80;
 volatile unsigned char *myTCCR1B = (unsigned char *) 0x81;
 volatile unsigned char *myTCCR1C = (unsigned char *) 0x82;
@@ -98,6 +98,14 @@ volatile unsigned int* my_ADC_DATA = (unsigned int*) 0x78;
 
 #define WRITE_HIGH_PA(pin_num)  *port_A |= (0x01 << pin_num);
 #define WRITE_LOW_PA(pin_num)  *port_A &= ~(0x01 << pin_num);
+
+const unsigned long LOOP_INTERVAL_MS = 2000;
+unsigned long lastLoopMs = 0;
+
+// for fan kickstart without delay()
+bool fanKickActive = false;
+unsigned long fanKickStartMs = 0;
+const unsigned long FAN_KICK_MS = 25;
 
 void setup()
 {
@@ -145,13 +153,31 @@ void setup()
 
 void loop()
 {
+  unsigned long now = millis();
+
+  if (fanKickActive && (now - fanKickStartMs >= FAN_KICK_MS))
+  {
+    fanKickActive = false;
+    analogWrite(speedPin, mSpeed);   // drop to normal speed after kick
+  }
+
+  // ---- old code (NOT allowed) ----
+  // delay(2000);
+
+  // ---- new code: run main loop every 2000ms ----
+  if (now - lastLoopMs < LOOP_INTERVAL_MS)
+  {
+    return;  // non-blocking wait
+  }
+  lastLoopMs = now;
+
   humid = dht.readHumidity();
   temp = dht.readTemperature(true); // true for Fahrenheit
-  //humid = 40.0;  
-  //temp  = 75.0; 
+  //humid = 40.0;
+  //temp  = 75.0;
 
   water_level = adc_read(0);
-  //delete prints later
+
   Serial.print("Temp: ");
   Serial.print(temp);
   Serial.print("  Hum: ");
@@ -166,48 +192,42 @@ void loop()
     TURN_OFF_FAN();
     lcd.noDisplay();
     WRITE_LOW_PF(6);
-    WRITE_LOW_PF(7); // turn off green light at A7
-    WRITE_LOW_PF(1); // turn off red Light at A1
+    WRITE_LOW_PF(7);
+    WRITE_LOW_PF(1);
 
-    WRITE_HIGH_PF(5); // Turn On Yellow Light (A5)
-
-    // return;
+    WRITE_HIGH_PF(5);
   }
   else if(Cooler == State::Error)
   {
     TURN_OFF_FAN();
     errorMessage(lcd);
-    WRITE_LOW_PF(7); // turn off green light at A0
-    WRITE_HIGH_PF(1);// turn on red led pin A1 
+    WRITE_LOW_PF(7);
+    WRITE_HIGH_PF(1);
     WRITE_LOW_PF(6);
-    WRITE_LOW_PF(5); // Turn Off Yellow Light (A5)
+    WRITE_LOW_PF(5);
   }
   else if(Cooler == State::Running)
   {
     TURN_ON_FAN();
     printStats(lcd,temp,humid);
-    WRITE_LOW_PF(7); // turn off green light at A0
-    WRITE_LOW_PF(1); // turn off red Light at A1
+    WRITE_LOW_PF(7);
+    WRITE_LOW_PF(1);
     WRITE_HIGH_PF(6);
-    WRITE_LOW_PF(5); // Turn Off Yellow Light (A5)
-
+    WRITE_LOW_PF(5);
   }
   else if (Cooler == State::Idle)
   {
     TURN_OFF_FAN();
     printStats(lcd,temp,humid);
-    WRITE_HIGH_PF(7); // turn on green light at A0
-    WRITE_LOW_PF(1); // turn off red Light at A1
+    WRITE_HIGH_PF(7);
+    WRITE_LOW_PF(1);
     WRITE_LOW_PF(6);
-    WRITE_LOW_PF(5); // Turn Off Yellow Light (A5)
+    WRITE_LOW_PF(5);
   }
 
   //CHECK IF STATE NEEDS TO CHANGE
-// Only allow transitions if not in Disabled or Error
   if(Cooler != State::Disabled)
-  { // make sure current state isnt off
-  
-    // Error transitions
+  {
     if(water_level <=  THRESHOLD_WATER_LOW)
     {
       Cooler = State::Error;
@@ -220,13 +240,14 @@ void loop()
     {
       Cooler = State::Idle;
     }
- 
   }
 
-  delay(2000);
+  // delay(2000);
 }
 
-// code from lab for delay
+
+
+// code from lab for millis
 void my_delay(unsigned int freq)
 {
   // calc period
@@ -298,7 +319,7 @@ void printStats(LiquidCrystal lcd, float t, float h)
   // lcd.clear();
 
   lcd.setCursor(0, 0);
-  lcd.write("Temp(F):");
+  lcd.write("Temp(F):  ");
   lcd.setCursor(10, 0);
   lcd.print(t);
 
@@ -321,18 +342,33 @@ void errorMessage(LiquidCrystal lcd)
   
 void TURN_OFF_FAN() {
     // turn off fan
-    WRITE_LOW_PA(6);    // Pin A6 (digital 28)
-    WRITE_LOW_PA(4);    // Pin A4 (digital 26)
+    WRITE_LOW_PA(6);
+    WRITE_LOW_PA(4);
     analogWrite(speedPin, 0);
+
+    // stop any pending kick
+    fanKickActive = false;
 }
+
 
 void TURN_ON_FAN() {
     // turn on fan
     WRITE_HIGH_PA(6);   // Pin A6 (digital 28)
     WRITE_LOW_PA(4);    // Pin A4 (digital 26)
-    analogWrite(speedPin, 255);
-    delay(25);
-    analogWrite(speedPin, mSpeed);
+
+    // ---- old code (WRONG / not how millis works) ----
+    // analogWrite(speedPin, 255);
+    // millis(25);
+    // analogWrite(speedPin, mSpeed);
+
+    // ---- new code: non-blocking kick then settle ----
+    if (!fanKickActive)
+    {
+      analogWrite(speedPin, 255);        // kick
+      fanKickActive = true;
+      fanKickStartMs = millis();         // start timer
+    }
+    // after FAN_KICK_MS, loop() will drop it to mSpeed
 }
 
 void adc_init()
